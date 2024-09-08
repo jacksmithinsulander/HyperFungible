@@ -68,6 +68,10 @@ contract HyperLoop is CCIPReceiver {
         );
     }
 
+    function addReceiverContract(address _receiverContract, uint40 _chainId) external {
+        receiverOnChain[ccipIdOf[_chainId]] = _receiverContract;
+    }
+
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
         HFDataTypes.HyperLoopReturn memory hlr = _decodeHyperLoop(message.data);
 
