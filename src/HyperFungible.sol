@@ -41,49 +41,53 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         _instantiateCcipIds();
     }
 
-    function withdrawTokens(uint256 _amount) external {
-        HFTDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_msg.sender]);
+    function withdrawTokens(uint256 _amount) external returns (bytes32 _messageId) {
+        HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[msg.sender]);
 
-        if (_amount > hftBalanceOf[_to][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
+        if (_amount > hftBalanceOf[msg.sender][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
 
         IRouterClient router = IRouterClient(ccipRouter);
 
         HFDataTypes.HyperLoopReturn memory hyperLoopReturn = HFDataTypes.HyperLoopReturn({
             to: msg.sender,
             token: navVals.token,
-            amount: hftBalanceOf[_to][navVals.chainId][navVals.token]
+            amount: hftBalanceOf[msg.sender][navVals.chainId][navVals.token]
         });
 
         uint64 destination = ccipIdOf[navVals.chainId];
 
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-            receiver: abi.encode(receiverOnChain[_destination]),
+            receiver: abi.encode(receiverOnChain[destination]),
             data: abi.encode(hyperLoopReturn),
             tokenAmounts: new Client.EVMTokenAmount[](0),
             extraArgs: "",
             feeToken: ccipFeesIn == HFDataTypes.CcipFeesIn.LINK ? link : address(0)
         });
 
-        uint256 fees = router.getFee(_destination, message);
+        uint256 fees = router.getFee(destination, message);
 
         _messageId = router.ccipSend{value: fees}(
-            _destination,
+            destination,
             message
         );
 
         _burn(msg.sender, _amount);
     }
 
-    function name() external view override returns(string memory) {
+    function name() public view override returns(string memory) {
         return "HyperFungibleToken";
     }
 
-    function symbol() external view override returns(string memory) {
+    function symbol() public view override returns(string memory) {
         return "HFT";
     }
 
     function getHftHashesOf(address _user) external view returns (bytes[] memory _hftHashes) {
-        _hftHashes = hftHashsOf[_user];
+        _hftHashes = hftHashesOf[_user];
+    }
+
+    function addReceiverContract(address _receiverContract, uint40 _chainId) external {
+        receiverOnChain[ccipIdOf[_chainId]] = _receiverContract;
     }
 
     function checkIfIHold(bytes memory _hftHash) external view returns (bool _holding, uint256 _amount) {
@@ -94,7 +98,7 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         _amount = hftBalanceOf[msg.sender][navVals.chainId][navVals.token];
     }
 
-    function createHftHash(uint40 _chainId, address _token) external view returns (bytes memory _hftHash) {
+    function createHftHash(uint40 _chainId, address _token) external pure returns (bytes memory _hftHash) {
         HFDataTypes.NavVals memory navVals = HFDataTypes.NavVals({
             chainId: _chainId,
             token: _token
@@ -119,49 +123,50 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_to]);
         hftBalanceOf[_to][navVals.chainId][navVals.token] = _amount;
 
-        if (!hasHft[to][nextSpendable[_to]]) {
-            hftHashesOf[to].push = nextSpendable[_to];
+        if (!hasHft[_to][nextSpendable[_to]]) {
+            hftHashesOf[_to].push(nextSpendable[_to]);
 
-            hasHft[to][nextSpendable[_to]] = true;
+            hasHft[_to][nextSpendable[_to]] = true;
         }
 
     }
 
     function _afterBurn(address _from, uint256 _amount) internal {
-        HFDataTypes memory navVals = _decodeNavVals(nextSpendable[_from]);
+        HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_from]);
 
         if (_amount == hftBalanceOf[_from][navVals.chainId][navVals.token]) {
-            hftBalanceOf[from][navVals.chainId][navVals.token] = 0;
-            hashHft[from][nextSpendable[from]] = false;
-            for (uint i = 0; i < hftHashesOf[from].lenth; i++) {
-                if (hftHashesOf[from][i] == nextSpendable[from]) {
-                    hashHft[from][nextSpendable[from]] = false;
-                    delete hftHashesOf[from][i];
-                    delete nextSpendable[from];
+            hftBalanceOf[_from][navVals.chainId][navVals.token] = 0;
+            hasHft[_from][nextSpendable[_from]] = false;
+            for (uint i = 0; i < hftHashesOf[_from].length; i++) {
+                if (keccak256(hftHashesOf[_from][i]) == keccak256(nextSpendable[_from])) {
+                    hasHft[_from][nextSpendable[_from]] = false;
+                    delete hftHashesOf[_from][i];
+                    delete nextSpendable[_from];
                 }
             }
         } else {
-            hftBalanceOf[from][navVals.chainId][navVals.token] -= _amount;
+            hftBalanceOf[_from][navVals.chainId][navVals.token] -= _amount;
         }
     }
 
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
         HFDataTypes.FullOrder memory receivedMessage = _decodeMessage(message.data);
 
-        HFDataTypes.NavVals memory navVals = (HFDataTypes.NavVals({
-            chainId: receivedMessage.chainId;
-            token: receivedMessage.order.token;
+        HFDataTypes.NavVals memory navVals = HFDataTypes.NavVals({
+            chainId: receivedMessage.chainId,
+            token: receivedMessage.order.token
         });
 
         bytes memory spendableHash = abi.encode(navVals);
 
-        nextSpendable[received.to] = spendableHash;
+        nextSpendable[receivedMessage.to] = spendableHash;
 
-        _mint(received.to, received.order.amount);
+        _mint(receivedMessage.to, receivedMessage.order.amount);
     }
 
     function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
-        if (!nextSpendable[from]) revert HFErrors.NO_NEXT_TOKEN_AND_PROBABLY_NOT_A_HYPER_FUNGIBLE_TOKEN_HOLDER_WHAT_THE_FUCK();
+        if (nextSpendable[from].length > 0) revert HFErrors.NO_NEXT_TOKEN_AND_PROBABLY_NOT_A_HYPER_FUNGIBLE_TOKEN_HOLDER_WHAT_THE_FUCK();
+        HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[from]);
         if (amount > hftBalanceOf[from][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
     }
 
@@ -172,7 +177,7 @@ contract HyperFungible is CCIPReceiver, ERC20 {
 
         if (amount == hftBalanceOf[from][navVals.chainId][navVals.token]) {
             hftBalanceOf[from][navVals.chainId][navVals.token] = 0;
-            hashHft[from][nextSpendable[from]] = false;
+            hasHft[from][nextSpendable[from]] = false;
             senderEmptied = true;
             hftBalanceOf[to][navVals.chainId][navVals.token] = amount;
         } else {
@@ -181,71 +186,19 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         }
 
         if (!hasHft[to][nextSpendable[from]]) {
-            hftHashesOf[to].push = nextSpendable[from];
+            hftHashesOf[to].push(nextSpendable[from]);
 
             hasHft[to][nextSpendable[from]] = true;
         }
 
         if (senderEmptied) {
-            for (uint i = 0; i < hftHashesOf[from].lenth; i++) {
-                if (hftHashesOf[from][i] == nextSpendable[from]) {
-
+            for (uint i = 0; i < hftHashesOf[from].length; i++) {
+                if (keccak256(hftHashesOf[from][i]) == keccak256(nextSpendable[from])) {
                     delete hftHashesOf[from][i];
                     delete nextSpendable[from];
                 }
             }
         }
-    }
-
-    function _burn(address from, uint256 amount) internal override {
-        /// @solidity memory-safe-assembly
-        assembly {
-            // Compute the balance slot and load its value.
-            mstore(0x0c, _BALANCE_SLOT_SEED)
-            mstore(0x00, from)
-            let fromBalanceSlot := keccak256(0x0c, 0x20)
-            let fromBalance := sload(fromBalanceSlot)
-            // Revert if insufficient balance.
-            if gt(amount, fromBalance) {
-                mstore(0x00, 0xf4d678b8) // `InsufficientBalance()`.
-                revert(0x1c, 0x04)
-            }
-            // Subtract and store the updated balance.
-            sstore(fromBalanceSlot, sub(fromBalance, amount))
-            // Subtract and store the updated total supply.
-            sstore(_TOTAL_SUPPLY_SLOT, sub(sload(_TOTAL_SUPPLY_SLOT), amount))
-            // Emit the {Transfer} event.
-            mstore(0x00, amount)
-            log3(0x00, 0x20, _TRANSFER_EVENT_SIGNATURE, shr(96, shl(96, from)), 0)
-        }
-
-        _afterBurn(from, amount);
-    }
-
-    function _mint(address to, uint256 amount) internal override {
-        /// @solidity memory-safe-assembly
-        assembly {
-            let totalSupplyBefore := sload(_TOTAL_SUPPLY_SLOT)
-            let totalSupplyAfter := add(totalSupplyBefore, amount)
-            // Revert if the total supply overflows.
-            if lt(totalSupplyAfter, totalSupplyBefore) {
-                mstore(0x00, 0xe5cfe957) // `TotalSupplyOverflow()`.
-                revert(0x1c, 0x04)
-            }
-            // Store the updated total supply.
-            sstore(_TOTAL_SUPPLY_SLOT, totalSupplyAfter)
-            // Compute the balance slot and load its value.
-            mstore(0x0c, _BALANCE_SLOT_SEED)
-            mstore(0x00, to)
-            let toBalanceSlot := keccak256(0x0c, 0x20)
-            // Add and store the updated balance.
-            sstore(toBalanceSlot, add(sload(toBalanceSlot), amount))
-            // Emit the {Transfer} event.
-            mstore(0x20, amount)
-            log3(0x20, 0x20, _TRANSFER_EVENT_SIGNATURE, 0, shr(96, mload(0x0c)))
-        }
-
-        _afterMint(to, amount);
     }
 
     function _decodeMessage(bytes memory _encodedMessage) internal pure returns(HFDataTypes.FullOrder memory _message) {
@@ -256,13 +209,9 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         _navVals = abi.decode(_encodedMessage, (HFDataTypes.NavVals));
     }
 
-    function _instantiateCccipIds() internal {
+    function _instantiateCcipIds() internal {
         ccipIdOf[11155111] = 16015286601757825753;
         ccipIdOf[84532] = 10344971235874465080;
         ccipIdOf[43113] = 14767482510784806043;
-
-        // receiverOnChain[11155111] = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
-        // receiverOnChain[84532] = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
-        // receiverOnChain[43113] = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
     }
 }

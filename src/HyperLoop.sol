@@ -69,27 +69,18 @@ contract HyperLoop is CCIPReceiver {
     }
 
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
-        HFDataTypes.FullOrder memory receivedMessage = _decodeMessage(message.data);
+        HFDataTypes.HyperLoopReturn memory hlr = _decodeHyperLoop(message.data);
 
-        HFDataTypes.NavVals memory navVals = (HFDataTypes.NavVals({
-            chainId: receivedMessage.chainId;
-            token: receivedMessage.order.token;
-        });
-
-        bytes memory spendableHash = abi.encode(navVals);
-
-        nextSpendable[received.to] = spendableHash;
-
-        _mint(received.to, received.order.amount);
+        IERC20(hlr.token).transfer(hlr.to, hlr.amount);
     }
 
-    function _instantiateCccipIds() internal {
+    function _decodeHyperLoop(bytes memory hashed) internal pure returns (HFDataTypes.HyperLoopReturn memory _hyperLoop) {
+        _hyperLoop = abi.decode(hashed, (HFDataTypes.HyperLoopReturn));
+    }
+
+    function _instantiateCcipIds() internal {
         ccipIdOf[11155111] = 16015286601757825753;
         ccipIdOf[84532] = 10344971235874465080;
         ccipIdOf[43113] = 14767482510784806043;
-
-        // receiverOnChain[11155111] = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
-        // receiverOnChain[84532] = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
-        // receiverOnChain[43113] = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
     }
 }

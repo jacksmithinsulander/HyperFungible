@@ -7,6 +7,6 @@ library HFErrors {
 
     error YOU_DONT_HOLD_THIS_MUCH(uint40 chainId, address token);
 
-    error YOU_DONT_OWN_HFT(bytes memory hftHash);
+    error YOU_DONT_OWN_HFT(bytes hftHash);
 
 }
