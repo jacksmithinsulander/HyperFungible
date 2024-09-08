@@ -41,33 +41,6 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         _instantiateCcipIds();
     }
 
-    function hyperfyTokens(HFDataTypes.HyperfyOrder calldata _order, uint64 _destination) external returns(bytes32 _messageId) {
-        IERC20(_order.token).transferFrom(msg.sender, address(this), _order.amount);
-
-        IRouterClient router = IRouterClient(ccipRouter);
-
-        HFDataTypes.FullOrder memory fullOrder = HFDataTypes.FullOrder({
-            order: _order,
-            chainId: chainId,
-            to: msg.sender
-        });
-
-        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
-            receiver: abi.encode(receiverOnChain[_destination]),
-            data: abi.encode(fullOrder),
-            tokenAmounts: new Client.EVMTokenAmount[](0),
-            extraArgs: "",
-            feeToken: ccipFeesIn == HFDataTypes.CcipFeesIn.LINK ? link : address(0)
-        });
-
-        uint256 fees = router.getFee(_destination, message);
-
-        _messageId = router.ccipSend{value: fees}(
-            _destination,
-            message
-        );
-    }
-
     function withdrawTokens(uint256 _amount) external {
         HFTDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_msg.sender]);
 
@@ -111,6 +84,23 @@ contract HyperFungible is CCIPReceiver, ERC20 {
 
     function getHftHashesOf(address _user) external view returns (bytes[] memory _hftHashes) {
         _hftHashes = hftHashsOf[_user];
+    }
+
+    function checkIfIHold(bytes memory _hftHash) external view returns (bool _holding, uint256 _amount) {
+        _holding = hasHft[msg.sender][_hftHash];
+
+        HFDataTypes.NavVals memory navVals = _decodeNavVals(_hftHash);
+
+        _amount = hftBalanceOf[msg.sender][navVals.chainId][navVals.token];
+    }
+
+    function createHftHash(uint40 _chainId, address _token) external view returns (bytes memory _hftHash) {
+        HFDataTypes.NavVals memory navVals = HFDataTypes.NavVals({
+            chainId: _chainId,
+            token: _token
+        });
+
+        _hftHash = abi.encode(navVals);
     }
 
     function swapNextSpendable(uint40 _chainId, address _token) external {
@@ -271,8 +261,8 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         ccipIdOf[84532] = 10344971235874465080;
         ccipIdOf[43113] = 14767482510784806043;
 
-        receiverOnChain[11155111] = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
-        receiverOnChain[84532] = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
-        receiverOnChain[43113] = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
+        // receiverOnChain[11155111] = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
+        // receiverOnChain[84532] = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
+        // receiverOnChain[43113] = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
     }
 }
