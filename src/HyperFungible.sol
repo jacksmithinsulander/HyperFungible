@@ -24,21 +24,21 @@ contract HyperFungible is CCIPReceiver, ERC20 {
     address public ccipRouter;
     address public link;
     uint40 public chainId;
+
     mapping(uint64 destinations => address receiver) public receiverOnChain;
-
     mapping(address holder => mapping(uint40 chainId => mapping(address token => uint256 amount))) public hftBalanceOf;
-
     mapping(address holder => bytes hashed) public nextSpendable;
-
     mapping(address holder => bytes[] hashed) public hftHashesOf;
-
     mapping(address holder => mapping(bytes hashed => bool status)) private hasHft;
+    mapping(uint40 chainid => uint64 ccipDestinationId) private ccipIdOf;
 
     constructor (address _ccipRouter, address _link, uint40 _chainId) CCIPReceiver(_ccipRouter) {
         ccipFeesIn = HFDataTypes.CcipFeesIn.NATIVE;
         ccipRouter = _ccipRouter;
         link = _link;
         chainId = _chainId;
+
+        _instantiateCcipIds();
     }
 
     function hyperfyTokens(HFDataTypes.HyperfyOrder calldata _order, uint64 _destination) external returns(bytes32 _messageId) {
@@ -48,7 +48,8 @@ contract HyperFungible is CCIPReceiver, ERC20 {
 
         HFDataTypes.FullOrder memory fullOrder = HFDataTypes.FullOrder({
             order: _order,
-            chainId: chainId
+            chainId: chainId,
+            to: msg.sender
         });
 
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
@@ -67,6 +68,39 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         );
     }
 
+    function withdrawTokens(uint256 _amount) external {
+        HFTDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_msg.sender]);
+
+        if (_amount > hftBalanceOf[_to][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
+
+        IRouterClient router = IRouterClient(ccipRouter);
+
+        HFDataTypes.HyperLoopReturn memory hyperLoopReturn = HFDataTypes.HyperLoopReturn({
+            to: msg.sender,
+            token: navVals.token,
+            amount: hftBalanceOf[_to][navVals.chainId][navVals.token]
+        });
+
+        uint64 destination = ccipIdOf[navVals.chainId];
+
+        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+            receiver: abi.encode(receiverOnChain[_destination]),
+            data: abi.encode(hyperLoopReturn),
+            tokenAmounts: new Client.EVMTokenAmount[](0),
+            extraArgs: "",
+            feeToken: ccipFeesIn == HFDataTypes.CcipFeesIn.LINK ? link : address(0)
+        });
+
+        uint256 fees = router.getFee(_destination, message);
+
+        _messageId = router.ccipSend{value: fees}(
+            _destination,
+            message
+        );
+
+        _burn(msg.sender, _amount);
+    }
+
     function name() external view override returns(string memory) {
         return "HyperFungibleToken";
     }
@@ -79,51 +113,77 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_to]);
         hftBalanceOf[_to][navVals.chainId][navVals.token] = _amount;
 
-        if (!hasHft[to][nextSpendable[msg.sender]]) {
-            hftHashesOf[to].push = nextSpendable[msg.sender];
+        if (!hasHft[to][nextSpendable[_to]]) {
+            hftHashesOf[to].push = nextSpendable[_to];
 
-            hasHft[to][nextSpendable[msg.sender]] = true;
+            hasHft[to][nextSpendable[_to]] = true;
         }
 
     }
 
-    function _afterBurn(address _from, uint256 _amount) internal {}
+    function _afterBurn(address _from, uint256 _amount) internal {
+        HFDataTypes memory navVals = _decodeNavVals(nextSpendable[_from]);
+
+        if (_amount == hftBalanceOf[_from][navVals.chainId][navVals.token]) {
+            hftBalanceOf[from][navVals.chainId][navVals.token] = 0;
+            hashHft[from][nextSpendable[from]] = false;
+            for (uint i = 0; i < hftHashesOf[from].lenth; i++) {
+                if (hftHashesOf[from][i] == nextSpendable[from]) {
+                    hashHft[from][nextSpendable[from]] = false;
+                    delete hftHashesOf[from][i];
+                    delete nextSpendable[from];
+                }
+            }
+        } else {
+            hftBalanceOf[from][navVals.chainId][navVals.token] -= _amount;
+        }
+    }
 
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
         HFDataTypes.FullOrder memory receivedMessage = _decodeMessage(message.data);
+
+        bytes memory spendableHash = abi.encode(NavVals({
+            chainId: receivedMessage.chainId;
+            token: receivedMessage.order.token;
+        }));
+
+        nextSpendable[received.to] = spendableHash;
+
+        _mint(received.to, received.order.amount);
     }
 
     function _beforeTokenTransfer(address from, address to, uint256 amount) internal override {
-        if (!nextSpendable[msg.sender]) revert HFErrors.NO_NEXT_TOKEN_AND_PROBABLY_NOT_A_HYPER_FUNGIBLE_TOKEN_HOLDER_WHAT_THE_FUCK();
-        if (amount > hftBalanceOf[msg.sender][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
+        if (!nextSpendable[from]) revert HFErrors.NO_NEXT_TOKEN_AND_PROBABLY_NOT_A_HYPER_FUNGIBLE_TOKEN_HOLDER_WHAT_THE_FUCK();
+        if (amount > hftBalanceOf[from][navVals.chainId][navVals.token]) revert HFErrors.YOU_DONT_HOLD_THIS_MUCH(navVals.chainId, navVals.token);
     }
 
     function _afterTokenTransfer(address from, address to, uint256 amount) internal override {
-        HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[msg.sender]);
+        HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[from]);
 
         bool senderEmptied;
 
-        if (amount == hftBalanceOf[msg.sender][navVals.chainId][navVals.token]) {
-            hftBalanceOf[msg.sender][navVals.chainId][navVals.token] = 0;
+        if (amount == hftBalanceOf[from][navVals.chainId][navVals.token]) {
+            hftBalanceOf[from][navVals.chainId][navVals.token] = 0;
+            hashHft[from][nextSpendable[from]] = false;
             senderEmptied = true;
             hftBalanceOf[to][navVals.chainId][navVals.token] = amount;
         } else {
-            hftBalanceOf[msg.sender][navVals.chainId][navVals.token] -= amount;
+            hftBalanceOf[from][navVals.chainId][navVals.token] -= amount;
             hftBalanceOf[to][navVals.chainId][navVals.token] += amount;
         }
 
-        if (!hasHft[to][nextSpendable[msg.sender]]) {
-            hftHashesOf[to].push = nextSpendable[msg.sender];
+        if (!hasHft[to][nextSpendable[from]]) {
+            hftHashesOf[to].push = nextSpendable[from];
 
-            hasHft[to][nextSpendable[msg.sender]] = true;
+            hasHft[to][nextSpendable[from]] = true;
         }
 
         if (senderEmptied) {
-            for (uint i = 0; i < hftHashesOf[msg.sender].lenth; i++) {
-                if (hftHashesOf[msg.sender][i] == nextSpendable[msg.sender]) {
-                    hashHft[msg.sender][nextSpendable[msg.sender]] = false;
-                    delete hftHashesOf[msg.sender][i];
-                    delete nextSpendable[msg.sender];
+            for (uint i = 0; i < hftHashesOf[from].lenth; i++) {
+                if (hftHashesOf[from][i] == nextSpendable[from]) {
+
+                    delete hftHashesOf[from][i];
+                    delete nextSpendable[from];
                 }
             }
         }
@@ -186,5 +246,15 @@ contract HyperFungible is CCIPReceiver, ERC20 {
 
     function _decodeNavVals(bytes memory _encodedMessage) internal pure returns(HFDataTypes.NavVals memory _navVals) {
         _navVals = abi.decode(_encodedMessage, (HFDataTypes.NavVals));
+    }
+
+    function _instantiateCccipIds() internal {
+        ccipIdOf[11155111] = 16015286601757825753;
+        ccipIdOf[84532] = 10344971235874465080;
+        ccipIdOf[43113] = 14767482510784806043;
+
+        receiverOnChain[11155111] = 0x0BF3dE8c5D3e8A2B34D2BEeB17ABfCeBaf363A59;
+        receiverOnChain[84532] = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
+        receiverOnChain[43113] = 0xF694E193200268f9a4868e4Aa017A0118C9a8177;
     }
 }

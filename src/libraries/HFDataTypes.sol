@@ -12,9 +12,16 @@ library HFDataTypes {
         uint256 amount; 
     }
 
+    struct HyperLoopReturn {
+        address to;
+        address token;
+        uint256 amount;
+    }
+
     struct FullOrder {
         HyperfyOrder order;
         uint40 chainId;
+        address to;
     }
 
     struct NavVals {
