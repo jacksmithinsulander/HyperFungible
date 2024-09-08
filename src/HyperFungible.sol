@@ -109,6 +109,22 @@ contract HyperFungible is CCIPReceiver, ERC20 {
         return "HFT";
     }
 
+    function getHftHashesOf(address _user) external view returns (bytes[] memory _hftHashes) {
+        _hftHashes = hftHashsOf[_user];
+    }
+
+    function swapNextSpendable(uint40 _chainId, address _token) external {
+        HFDataTypes.NavVals memory navVals = HFDataTypes.NavVals({
+            chainId: _chainId,
+            token: _token
+        });
+        bytes memory hftHash = abi.encode(navVals);
+
+        if (!hasHft[msg.sender][hftHash]) revert HFErrors.YOU_DONT_OWN_HFT(hftHash);
+
+        nextSpendable[msg.sender] = hftHash;
+    }
+
     function _afterMint(address _to, uint256 _amount) internal {
         HFDataTypes.NavVals memory navVals = _decodeNavVals(nextSpendable[_to]);
         hftBalanceOf[_to][navVals.chainId][navVals.token] = _amount;
@@ -142,10 +158,12 @@ contract HyperFungible is CCIPReceiver, ERC20 {
     function _ccipReceive(Client.Any2EVMMessage memory message) internal override {
         HFDataTypes.FullOrder memory receivedMessage = _decodeMessage(message.data);
 
-        bytes memory spendableHash = abi.encode(NavVals({
+        HFDataTypes.NavVals memory navVals = (HFDataTypes.NavVals({
             chainId: receivedMessage.chainId;
             token: receivedMessage.order.token;
-        }));
+        });
+
+        bytes memory spendableHash = abi.encode(navVals);
 
         nextSpendable[received.to] = spendableHash;
 
